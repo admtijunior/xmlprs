@@ -3,501 +3,556 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Leitor de NF-e (Múltiplos Arquivos)</title>
+    <title>Visualizador XML Fiscal Portátil</title>
     
-    <!-- Tailwind CSS -->
+    <!-- Bibliotecas via CDN (Funciona com internet) -->
     <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
-    
-    <!-- Fonte Inter -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
 
     <style>
-        body { font-family: 'Inter', sans-serif; }
-        .animate-fade-in { animation: fadeIn 0.3s ease-in-out; }
+        /* Estilos Personalizados para aparência "Fiscal" */
+        body { font-family: 'Roboto', sans-serif; background-color: #f0f2f5; color: #1f2937; }
+        
+        /* Tabela Fiscal */
+        .fiscal-table { width: 100%; border-collapse: collapse; background: white; font-size: 0.85rem; }
+        .fiscal-table th { background-color: #e5e7eb; color: #374151; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 10px; border-bottom: 2px solid #d1d5db; text-align: left; }
+        .fiscal-table td { padding: 8px 10px; border-bottom: 1px solid #e5e7eb; vertical-align: middle; }
+        .fiscal-table tr:hover td { background-color: #f8fafc; }
+        
+        /* Badges */
+        .badge { padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; border: 1px solid transparent; }
+        .badge-yes { background-color: #fee2e2; color: #991b1b; border-color: #fecaca; } /* Vermelho para Retenção */
+        .badge-no { background-color: #dcfce7; color: #166534; border-color: #bbf7d0; } /* Verde para Sem Retenção */
+        .badge-cfop { background-color: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; font-family: monospace; font-size: 0.75rem; }
+
+        /* Boxes de Detalhe */
+        .detail-box { background: white; border: 1px solid #d1d5db; border-radius: 4px; overflow: hidden; margin-bottom: 16px; }
+        .detail-header { background: #f3f4f6; border-bottom: 1px solid #d1d5db; padding: 8px 12px; font-weight: 700; font-size: 0.8rem; color: #4b5563; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; }
+        .detail-content { padding: 12px; }
+
+        /* Linha de Valor */
+        .val-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px dashed #e5e7eb; }
+        .val-row:last-child { border-bottom: none; }
+        .val-label { font-size: 0.75rem; color: #6b7280; }
+        .val-data { font-family: 'Courier New', monospace; font-weight: 600; font-size: 0.9rem; }
+        .val-red { color: #dc2626; } /* Vermelho para valores de retenção */
+        
+        /* Upload Zone */
+        .upload-zone { border: 2px dashed #cbd5e1; border-radius: 8px; background: white; transition: all 0.2s; }
+        .upload-zone:hover { border-color: #3b82f6; background: #eff6ff; }
+        
+        /* Animação */
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
-<body class="bg-slate-50 min-h-screen text-slate-800 p-4 md:p-8">
+<body class="p-4 md:p-8">
 
-    <div id="app" class="max-w-6xl mx-auto space-y-6">
-        <!-- O conteúdo será renderizado aqui via JavaScript -->
+    <div id="app" class="max-w-7xl mx-auto">
+        <!-- O conteúdo será injetado aqui -->
     </div>
 
     <script>
-        // Estado da Aplicação
-        let nfeList = []; // Lista de todas as notas importadas
-        let selectedNfeIndex = null; // Índice da nota selecionada para ver detalhes
-        let errorMsg = '';
-        let dragActive = false;
-        let isProcessing = false;
-
-        // Elementos DOM
-        const appElement = document.getElementById('app');
-
-        // Funções Auxiliares
-        const getTagValue = (parent, tagName, defaultValue = '') => {
-            if (!parent) return defaultValue;
-            const element = parent.getElementsByTagName(tagName)[0];
-            return element ? element.textContent : defaultValue;
+        // --- CONFIGURAÇÃO E ESTADO ---
+        let state = {
+            activeTab: 'nfe', // 'nfe' ou 'nfse'
+            nfeList: [],
+            nfseList: [],
+            selectedIndex: null, // null = lista, número = detalhe
+            isProcessing: false,
+            dragActive: false
         };
 
-        const formatCurrency = (value) => {
-            return new Intl.NumberFormat('pt-BR', {
-                style: 'currency',
-                currency: 'BRL'
-            }).format(parseFloat(value) || 0);
+        const app = document.getElementById('app');
+
+        // --- UTILITÁRIOS ---
+        const $ = (tag) => document.createElement(tag);
+        
+        const getTag = (parent, tag) => {
+            if (!parent) return '';
+            const el = parent.getElementsByTagName(tag)[0];
+            return el ? el.textContent : '';
+        };
+        
+        const formatBRL = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(val)||0);
+        
+        const formatDate = (str) => {
+            if(!str) return '';
+            if(str.includes('T')) return str.split('T')[0].split('-').reverse().join('/');
+            return str;
         };
 
-        // Lógica de Parse (Retorna o objeto de dados)
-        const parseNFeContent = (xmlText, fileName) => {
+        const downloadCSV = (content, filename) => {
+            const blob = new Blob(["\ufeff" + content], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = filename;
+            link.click();
+        };
+
+        // --- PARSERS DE XML ---
+
+        const parseNFe = (xmlText, fileName) => {
             try {
                 const parser = new DOMParser();
-                const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+                const doc = parser.parseFromString(xmlText, "text/xml");
+                const infNFe = doc.getElementsByTagName('infNFe')[0];
+                if (!infNFe) throw new Error("XML não é NF-e");
 
-                const infNFe = xmlDoc.getElementsByTagName('infNFe')[0];
-                if (!infNFe) throw new Error("Estrutura infNFe não encontrada.");
-
-                const ide = xmlDoc.getElementsByTagName('ide')[0];
-                const emit = xmlDoc.getElementsByTagName('emit')[0];
-                const dest = xmlDoc.getElementsByTagName('dest')[0];
-                const total = xmlDoc.getElementsByTagName('total')[0];
+                const ide = doc.getElementsByTagName('ide')[0];
+                const emit = doc.getElementsByTagName('emit')[0];
+                const dest = doc.getElementsByTagName('dest')[0];
+                const total = doc.getElementsByTagName('total')[0];
                 
-                const ufEmitente = getTagValue(emit?.getElementsByTagName('enderEmit')[0], 'UF');
-                const numeroNota = getTagValue(ide, 'nNF');
-                const serie = getTagValue(ide, 'serie');
-                const dataRaw = getTagValue(ide, 'dhEmi');
-                const dataEmissao = dataRaw ? dataRaw.split('T')[0].split('-').reverse().join('/') : 'N/A';
-                const emitenteNome = getTagValue(emit, 'xNome');
-                const emitenteCNPJ = getTagValue(emit, 'CNPJ');
-                const destNome = getTagValue(dest, 'xNome');
+                // Dados Básicos
+                const header = {
+                    numero: getTag(ide, 'nNF'),
+                    serie: getTag(ide, 'serie'),
+                    emissao: formatDate(getTag(ide, 'dhEmi')),
+                    chave: infNFe.getAttribute('Id')?.replace('NFe', '') || '',
+                    natOp: getTag(ide, 'natOp')
+                };
 
-                const icmsTot = total?.getElementsByTagName('ICMSTot')[0];
-                const impostosRetidos = [];
-                const impostosMap = [
-                    { key: 'vST', label: 'ICMS ST' },
-                    { key: 'vFCPST', label: 'FCP ST' },
-                    { key: 'vFCPSTRet', label: 'FCP ST Ret' },
-                    { key: 'vIPIDevol', label: 'IPI Dev' }
-                ];
+                // Participantes
+                const emitente = { nome: getTag(emit, 'xNome'), cnpj: getTag(emit, 'CNPJ'), uf: getTag(emit.getElementsByTagName('enderEmit')[0], 'UF') };
+                const destinatario = { nome: getTag(dest, 'xNome'), cnpj: getTag(dest, 'CNPJ') || getTag(dest, 'CPF'), uf: getTag(dest?.getElementsByTagName('enderDest')[0], 'UF') };
 
-                let totalRetido = 0;
-                impostosMap.forEach(imp => {
-                    const val = parseFloat(getTagValue(icmsTot, imp.key, '0'));
-                    if (val > 0) {
-                        impostosRetidos.push({ label: imp.label, value: val });
-                        totalRetido += val;
-                    }
-                });
+                // Valores e Impostos Normais
+                const icmsTot = total.getElementsByTagName('ICMSTot')[0];
+                const impostos = {
+                    vBC: Number(getTag(icmsTot, 'vBC')),
+                    vICMS: Number(getTag(icmsTot, 'vICMS')),
+                    vIPI: Number(getTag(icmsTot, 'vIPI')),
+                    vPIS: Number(getTag(icmsTot, 'vPIS')),
+                    vCOFINS: Number(getTag(icmsTot, 'vCOFINS')),
+                    vProd: Number(getTag(icmsTot, 'vProd')),
+                    vNF: Number(getTag(icmsTot, 'vNF'))
+                };
 
-                const issqnTot = total?.getElementsByTagName('ISSQNtot')[0];
-                if (issqnTot) {
-                    const vIssRet = parseFloat(getTagValue(issqnTot, 'vISSRet', '0'));
-                    if (vIssRet > 0) {
-                        impostosRetidos.push({ label: 'ISS Retido', value: vIssRet });
-                        totalRetido += vIssRet;
-                    }
+                // Valores de Retenção (Onde procuramos o "Sim")
+                const ret = {
+                    vST: Number(getTag(icmsTot, 'vST')),
+                    vFCPST: Number(getTag(icmsTot, 'vFCPST')),
+                    vPISRet: 0, vCOFINSRet: 0, vCSLLRet: 0, vIRRFRet: 0, vINSSRet: 0
+                };
+
+                const retTrib = total.getElementsByTagName('retTrib')[0];
+                if(retTrib) {
+                    ret.vPISRet = Number(getTag(retTrib, 'vRetPIS'));
+                    ret.vCOFINSRet = Number(getTag(retTrib, 'vRetCOFINS'));
+                    ret.vCSLLRet = Number(getTag(retTrib, 'vRetCSLL'));
+                    ret.vIRRFRet = Number(getTag(retTrib, 'vIRRF'));
+                    ret.vINSSRet = Number(getTag(retTrib, 'vRetPrev'));
                 }
 
-                const dets = xmlDoc.getElementsByTagName('det');
-                const produtos = [];
+                const issqn = total.getElementsByTagName('ISSQNtot')[0];
+                let vISSRet = 0;
+                if(issqn) vISSRet = Number(getTag(issqn, 'vISSRet'));
+                ret.vISSRet = vISSRet;
 
-                for (let i = 0; i < dets.length; i++) {
+                const totalRetido = Object.values(ret).reduce((a,b)=>a+b, 0);
+                const temRetencao = totalRetido > 0;
+
+                // Produtos
+                const items = [];
+                const dets = doc.getElementsByTagName('det');
+                const cfopSet = new Set(); // Para coletar CFOPs únicos
+
+                for(let i=0; i<dets.length; i++){
                     const prod = dets[i].getElementsByTagName('prod')[0];
-                    const imposto = dets[i].getElementsByTagName('imposto')[0];
+                    const imp = dets[i].getElementsByTagName('imposto')[0];
+                    const cfop = getTag(prod, 'CFOP');
                     
-                    const vICMS = parseFloat(getTagValue(imposto?.getElementsByTagName('ICMS')[0], 'vICMS', '0'));
-                    const vIPI = parseFloat(getTagValue(imposto?.getElementsByTagName('IPI')[0], 'vIPI', '0'));
-                    const vPIS = parseFloat(getTagValue(imposto?.getElementsByTagName('PIS')[0], 'vPIS', '0'));
-                    const vCOFINS = parseFloat(getTagValue(imposto?.getElementsByTagName('COFINS')[0], 'vCOFINS', '0'));
+                    if(cfop) cfopSet.add(cfop);
 
-                    produtos.push({
-                        id: i + 1,
-                        nome: getTagValue(prod, 'xProd'),
-                        ncm: getTagValue(prod, 'NCM'),
-                        cfop: getTagValue(prod, 'CFOP'),
-                        unidade: getTagValue(prod, 'uCom'),
-                        quantidade: parseFloat(getTagValue(prod, 'qCom')),
-                        valorUnitario: parseFloat(getTagValue(prod, 'vUnCom')),
-                        valorTotal: parseFloat(getTagValue(prod, 'vProd')),
-                        impostosItem: { vICMS, vIPI, vPIS, vCOFINS }
+                    items.push({
+                        nItem: i+1,
+                        xProd: getTag(prod, 'xProd'),
+                        ncm: getTag(prod, 'NCM'),
+                        cfop: cfop,
+                        uCom: getTag(prod, 'uCom'),
+                        qCom: Number(getTag(prod, 'qCom')),
+                        vUnCom: Number(getTag(prod, 'vUnCom')),
+                        vProd: Number(getTag(prod, 'vProd')),
+                        vICMS: Number(getTag(imp.getElementsByTagName('ICMS')[0], 'vICMS') || 0),
+                        vIPI: Number(getTag(imp.getElementsByTagName('IPI')[0], 'vIPI') || 0)
                     });
                 }
 
-                const valorTotalNota = parseFloat(getTagValue(icmsTot, 'vNF', '0'));
-                const valorTotalProdutos = parseFloat(getTagValue(icmsTot, 'vProd', '0'));
+                const cfops = Array.from(cfopSet).sort().join(', ');
 
-                return {
-                    success: true,
-                    fileName,
-                    header: { numeroNota, serie, dataEmissao, ufEmitente, emitenteNome, emitenteCNPJ, destNome },
-                    produtos,
-                    impostosRetidos,
-                    totais: { valorTotalNota, valorTotalProdutos, totalRetido }
+                return { success: true, fileName, header, emitente, destinatario, impostos, ret, temRetencao, totalRetido, items, cfops };
+            } catch (e) {
+                console.error(e);
+                return { success: false, fileName, error: e.message };
+            }
+        };
+
+        const parseNFSe = (xmlText, fileName) => {
+            try {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(xmlText, "text/xml");
+                const nfse = doc.getElementsByTagName('nfse')[0] || doc.getElementsByTagName('Nfse')[0];
+                if (!nfse) throw new Error("XML não é NFS-e");
+
+                // Dados básicos (Baseado no modelo São Luís/Ginfes/Padrão Nacional)
+                const numero = getTag(nfse, 'numeroNota');
+                const emissao = formatDate(getTag(nfse, 'dtEmissao'));
+                
+                const prestadorNode = nfse.getElementsByTagName('prestador')[0];
+                const prestador = {
+                    nome: getTag(prestadorNode, 'razaoSocial'),
+                    cnpj: getTag(prestadorNode, 'cnpj')
                 };
 
-            } catch (err) {
-                console.error(err);
-                return { success: false, fileName, error: err.message };
-            }
-        };
+                // Valores
+                const totais = nfse.getElementsByTagName('totais')[0] || nfse; 
+                let vNota = Number(getTag(totais, 'valotTotalNota') || getTag(totais, 'valorTotalNota'));
+                let vServico = Number(getTag(totais, 'valorTotalServico'));
+                let vISS = Number(getTag(totais, 'valorTotalISS'));
 
-        const readFileAsText = (file) => {
-            return new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.onload = (e) => resolve({ name: file.name, content: e.target.result });
-                reader.onerror = () => resolve({ name: file.name, content: null, error: "Erro de leitura" });
-                reader.readAsText(file);
-            });
-        };
-
-        const handleFiles = async (fileList) => {
-            if (!fileList || fileList.length === 0) return;
-            
-            isProcessing = true;
-            render();
-
-            const promises = Array.from(fileList).map(file => {
-                if(file.type !== "text/xml") return Promise.resolve({ success: false, fileName: file.name, error: "Não é XML" });
-                return readFileAsText(file).then(fileData => {
-                    if(fileData.error) return { success: false, fileName: fileData.name, error: fileData.error };
-                    return parseNFeContent(fileData.content, fileData.name);
-                });
-            });
-
-            const results = await Promise.all(promises);
-            
-            // Filtra sucessos e erros
-            const newNfes = results.filter(r => r.success);
-            const errors = results.filter(r => !r.success);
-
-            if (newNfes.length > 0) {
-                // Adiciona à lista existente
-                nfeList = [...nfeList, ...newNfes];
-                errorMsg = '';
-            }
-            
-            if (errors.length > 0) {
-                errorMsg = `${errors.length} arquivo(s) falharam na leitura.`;
-            }
-
-            isProcessing = false;
-            render();
-        };
-
-        // Renderização Principal
-        const render = () => {
-            let content = '';
-
-            // Header Comum
-            const headerHtml = `
-                <header class="flex flex-col md:flex-row justify-between items-center bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                    <div class="flex items-center gap-3 mb-4 md:mb-0 cursor-pointer" onclick="selectedNfeIndex = null; render();">
-                        <div class="bg-blue-600 p-2 rounded-lg">
-                            <i data-lucide="file-text" class="text-white w-6 h-6"></i>
-                        </div>
-                        <div>
-                            <h1 class="text-xl font-bold text-slate-800">Leitor de NF-e</h1>
-                            <p class="text-sm text-slate-500">Importe e analise múltiplos XMLs</p>
-                        </div>
-                    </div>
-                    <div class="flex gap-2">
-                         ${nfeList.length > 0 && selectedNfeIndex === null ? `
-                             <button onclick="document.getElementById('fileInputAdd').click()" 
-                                class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors text-sm font-medium flex items-center gap-2">
-                                <i data-lucide="plus" class="w-4 h-4"></i> Adicionar Mais
-                             </button>
-                             <button onclick="nfeList = []; errorMsg = ''; render();" 
-                                class="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg transition-colors text-sm font-medium">
-                                Limpar Tudo
-                             </button>
-                         ` : ''}
-                         ${selectedNfeIndex !== null ? `
-                            <button onclick="selectedNfeIndex = null; render();" 
-                                class="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors text-sm font-medium flex items-center gap-2">
-                                <i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar
-                             </button>
-                         ` : ''}
-                    </div>
-                    <input id="fileInputAdd" type="file" multiple class="hidden" accept=".xml" onchange="handleFiles(this.files)" />
-                </header>
-            `;
-
-            if (isProcessing) {
-                content = `
-                    ${headerHtml}
-                    <div class="flex flex-col items-center justify-center h-64 text-slate-500">
-                        <i data-lucide="loader-2" class="w-10 h-10 animate-spin mb-4 text-blue-600"></i>
-                        <p>Processando arquivos...</p>
-                    </div>
-                `;
-            } else if (nfeList.length === 0) {
-                // Tela de Upload Inicial
-                content = `
-                    ${headerHtml}
-                    <div id="dropZone"
-                        class="relative flex flex-col items-center justify-center w-full h-64 border-2 border-dashed rounded-xl transition-all duration-200 cursor-pointer ${dragActive ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-white hover:bg-slate-50'} ${errorMsg ? 'border-red-300 bg-red-50' : ''}"
-                        onclick="document.getElementById('fileInputMain').click()">
-                        
-                        <input id="fileInputMain" type="file" multiple class="hidden" accept=".xml" onchange="handleFiles(this.files)" />
-                        
-                        <i data-lucide="layers" class="w-12 h-12 mb-4 ${dragActive ? 'text-blue-500' : 'text-slate-400'}"></i>
-                        <p class="text-lg font-medium text-slate-600">Arraste e solte seus XMLs aqui</p>
-                        <p class="text-sm text-slate-400 mt-2">Você pode selecionar vários arquivos de uma vez</p>
-                        ${errorMsg ? `<p class="mt-4 text-red-600 font-medium flex items-center gap-2"><i data-lucide="alert-triangle" size="18"></i> ${errorMsg}</p>` : ''}
-                    </div>
-                `;
-            } else if (selectedNfeIndex === null) {
-                // Dashboard / Lista
-                const totalGeral = nfeList.reduce((acc, nfe) => acc + nfe.totais.valorTotalNota, 0);
-                const totalRetidoGeral = nfeList.reduce((acc, nfe) => acc + nfe.totais.totalRetido, 0);
+                const ret = { pis: 0, cofins: 0, inss: 0, ir: 0, csll: 0 };
                 
-                const statsHtml = `
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div class="bg-blue-600 text-white p-5 rounded-xl shadow-sm">
-                            <p class="text-xs text-blue-200 uppercase font-bold tracking-wider">Total de Notas</p>
-                            <h3 class="text-3xl font-bold mt-1">${nfeList.length}</h3>
-                        </div>
-                        <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                            <p class="text-xs text-slate-400 uppercase font-bold tracking-wider">Valor Total Acumulado</p>
-                            <h3 class="text-2xl font-bold text-slate-800 mt-1">${formatCurrency(totalGeral)}</h3>
-                        </div>
-                        <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                            <p class="text-xs text-slate-400 uppercase font-bold tracking-wider">Total Retido Geral</p>
-                            <h3 class="text-2xl font-bold ${totalRetidoGeral > 0 ? 'text-amber-600' : 'text-green-600'} mt-1">
-                                ${formatCurrency(totalRetidoGeral)}
-                            </h3>
-                        </div>
-                    </div>
-                `;
+                ret.pis += Number(getTag(totais, 'valorPis'));
+                ret.cofins += Number(getTag(totais, 'valorCofins'));
+                ret.inss += Number(getTag(totais, 'valorInss'));
+                ret.ir += Number(getTag(totais, 'valorIr'));
+                ret.csll += Number(getTag(totais, 'valorCsll'));
 
-                const listHtml = `
-                    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div class="p-5 border-b border-slate-100 bg-slate-50/50">
-                             <h3 class="font-bold text-slate-700">Notas Importadas</h3>
-                        </div>
-                        <div class="overflow-x-auto">
-                            <table class="w-full text-left text-sm">
-                                <thead class="bg-slate-50 text-slate-500 border-b border-slate-200">
-                                    <tr>
-                                        <th class="px-6 py-3 font-semibold">Número / Série</th>
-                                        <th class="px-6 py-3 font-semibold">Emitente</th>
-                                        <th class="px-6 py-3 font-semibold">Data</th>
-                                        <th class="px-6 py-3 font-semibold text-right">Valor Total</th>
-                                        <th class="px-6 py-3 font-semibold text-center">Retenções</th>
-                                        <th class="px-6 py-3 font-semibold text-center">Ação</th>
-                                    </tr>
-                                </thead>
-                                <tbody class="divide-y divide-slate-100">
-                                    ${nfeList.map((nfe, index) => `
-                                        <tr class="hover:bg-slate-50 transition-colors cursor-pointer group" onclick="selectedNfeIndex = ${index}; render();">
-                                            <td class="px-6 py-4">
-                                                <div class="font-bold text-slate-800">${nfe.header.numeroNota}</div>
-                                                <div class="text-xs text-slate-400">Série ${nfe.header.serie}</div>
-                                            </td>
-                                            <td class="px-6 py-4">
-                                                <div class="font-medium text-slate-800 truncate max-w-[200px]" title="${nfe.header.emitenteNome}">${nfe.header.emitenteNome}</div>
-                                                <div class="text-xs text-slate-400">UF: ${nfe.header.ufEmitente}</div>
-                                            </td>
-                                            <td class="px-6 py-4 text-slate-600">${nfe.header.dataEmissao}</td>
-                                            <td class="px-6 py-4 text-right font-medium text-slate-800">${formatCurrency(nfe.totais.valorTotalNota)}</td>
-                                            <td class="px-6 py-4 text-center">
-                                                ${nfe.impostosRetidos.length > 0 
-                                                    ? `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">Sim (${formatCurrency(nfe.totais.totalRetido)})</span>`
-                                                    : `<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Não</span>`
-                                                }
-                                            </td>
-                                            <td class="px-6 py-4 text-center">
-                                                <button class="text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity font-medium text-xs bg-blue-50 px-3 py-1 rounded">
-                                                    Ver Detalhes
-                                                </button>
-                                            </td>
-                                        </tr>
-                                    `).join('')}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                `;
+                const impFed = nfse.getElementsByTagName('impostosFederais')[0];
+                if(impFed) {
+                    const imps = impFed.getElementsByTagName('imposto');
+                    for(let i=0; i<imps.length; i++){
+                        const desc = getTag(imps[i], 'descricaoImposto').toLowerCase();
+                        const val = Number(getTag(imps[i], 'valorImposto'));
+                        if(desc.includes('pis')) ret.pis = val;
+                        if(desc.includes('cofins')) ret.cofins = val;
+                        if(desc.includes('inss')) ret.inss = val;
+                        if(desc.includes('ir')) ret.ir = val;
+                        if(desc.includes('csll')) ret.csll = val;
+                    }
+                }
 
-                content = `
-                    ${headerHtml}
-                    <div class="animate-fade-in space-y-6">
-                        ${statsHtml}
-                        ${listHtml}
-                        ${errorMsg ? `<p class="text-red-600 text-center font-medium">${errorMsg}</p>` : ''}
-                    </div>
-                `;
+                const totalRetido = Object.values(ret).reduce((a,b)=>a+b, 0);
+                const temRetencao = totalRetido > 0;
 
+                return { success: true, fileName, header: { numero, emissao }, prestador, valores: { vNota, vServico, vISS }, ret, temRetencao, totalRetido };
+
+            } catch (e) {
+                return { success: false, fileName, error: e.message };
+            }
+        };
+
+        // --- HANDLERS ---
+        const handleFiles = async (files) => {
+            if(!files.length) return;
+            state.isProcessing = true; render();
+
+            for(const file of files) {
+                const text = await file.text();
+                if(state.activeTab === 'nfe') {
+                    const res = parseNFe(text, file.name);
+                    if(res.success) state.nfeList.push(res);
+                } else {
+                    const res = parseNFSe(text, file.name);
+                    if(res.success) state.nfseList.push(res);
+                }
+            }
+            state.isProcessing = false; render();
+        };
+
+        const exportCSV = () => {
+            if(state.activeTab === 'nfe') {
+                const header = "Numero;Emissao;Emitente;CNPJ;Produto;NCM;CFOP;Qtd;V.Unit;V.Total;ICMS;IPI;Ret_ST;Ret_PIS;Ret_COF;Ret_CSLL;Ret_IR;Ret_INSS\n";
+                const rows = state.nfeList.flatMap(nf => nf.items.map(i => {
+                    return [
+                        nf.header.numero, nf.header.emissao, nf.emitente.nome, nf.emitente.cnpj,
+                        i.xProd, i.ncm, i.cfop, i.qCom, i.vUnCom, i.vProd, i.vICMS, i.vIPI,
+                        nf.ret.vST, nf.ret.vPISRet, nf.ret.vCOFINSRet, nf.ret.vCSLLRet, nf.ret.vIRRFRet, nf.ret.vINSSRet
+                    ].map(f => String(f).replace('.',',')).join(';');
+                })).join('\n');
+                downloadCSV(header+rows, 'relatorio_nfe.csv');
             } else {
-                // Detalhe da Nota Selecionada
-                const nfeData = nfeList[selectedNfeIndex];
-                const hasRetidos = nfeData.impostosRetidos.length > 0;
-                
-                // Cards Detalhe
-                const cardsHtml = `
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                            <p class="text-xs text-slate-400 uppercase font-bold tracking-wider">Emitente</p>
-                            <h3 class="font-bold text-slate-800 truncate mt-1" title="${nfeData.header.emitenteNome}">${nfeData.header.emitenteNome}</h3>
-                            <div class="text-xs text-slate-400 mt-1">CNPJ: ${nfeData.header.emitenteCNPJ}</div>
-                            <div class="flex items-center gap-1 mt-2 text-blue-600 bg-blue-50 w-fit px-2 py-1 rounded text-xs font-bold">
-                                <i data-lucide="map-pin" class="w-3 h-3"></i> UF: ${nfeData.header.ufEmitente}
-                            </div>
-                        </div>
-                        <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                            <p class="text-xs text-slate-400 uppercase font-bold tracking-wider">Nota Fiscal</p>
-                            <div class="flex items-baseline gap-2 mt-1">
-                                <h3 class="text-2xl font-bold text-slate-800">Nº ${nfeData.header.numeroNota}</h3>
-                                <span class="text-slate-500 text-sm">Série ${nfeData.header.serie}</span>
-                            </div>
-                            <p class="text-sm text-slate-500 mt-1">Emissão: ${nfeData.header.dataEmissao}</p>
-                        </div>
-                        <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-                            <p class="text-xs text-slate-400 uppercase font-bold tracking-wider">Valor Total</p>
-                            <h3 class="text-2xl font-bold text-green-600 mt-1">${formatCurrency(nfeData.totais.valorTotalNota)}</h3>
-                            <p class="text-xs text-slate-400 mt-1">Prod: ${formatCurrency(nfeData.totais.valorTotalProdutos)}</p>
+                const header = "Numero;Emissao;Prestador;CNPJ;V.Servico;V.ISS;V.Liquido;Ret_PIS;Ret_COF;Ret_INSS;Ret_IR;Ret_CSLL\n";
+                const rows = state.nfseList.map(nf => {
+                    return [
+                        nf.header.numero, nf.header.emissao, nf.prestador.nome, nf.prestador.cnpj,
+                        nf.valores.vServico, nf.valores.vISS, nf.valores.vNota,
+                        nf.ret.pis, nf.ret.cofins, nf.ret.inss, nf.ret.ir, nf.ret.csll
+                    ].map(f => String(f).replace('.',',')).join(';');
+                }).join('\n');
+                downloadCSV(header+rows, 'relatorio_nfse.csv');
+            }
+        };
+
+        // --- RENDERIZADORES ---
+
+        const Header = () => `
+            <div class="flex flex-col md:flex-row justify-between items-center mb-6 bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                <div class="flex items-center gap-3 mb-4 md:mb-0">
+                    <div class="bg-blue-600 p-2 rounded text-white"><i data-lucide="file-spreadsheet"></i></div>
+                    <div>
+                        <h1 class="text-xl font-bold text-gray-800">Leitor Fiscal XML</h1>
+                        <p class="text-xs text-gray-500">Visualizador e Extrator de Dados</p>
+                    </div>
+                </div>
+                <div class="flex bg-gray-100 p-1 rounded">
+                    <button onclick="state.activeTab='nfe'; state.selectedIndex=null; render()" class="px-4 py-2 text-sm font-medium rounded ${state.activeTab === 'nfe' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'}">NF-e (Produtos)</button>
+                    <button onclick="state.activeTab='nfse'; state.selectedIndex=null; render()" class="px-4 py-2 text-sm font-medium rounded ${state.activeTab === 'nfse' ? 'bg-white shadow text-blue-600' : 'text-gray-500 hover:text-gray-700'}">NFS-e (Serviços)</button>
+                </div>
+            </div>
+        `;
+
+        const UploadArea = () => `
+            <div class="upload-zone h-64 flex flex-col items-center justify-center cursor-pointer mb-6" onclick="document.getElementById('fileInput').click()" ondragover="event.preventDefault()" ondrop="event.preventDefault(); handleFiles(event.dataTransfer.files)">
+                <i data-lucide="upload-cloud" class="w-12 h-12 text-gray-300 mb-3"></i>
+                <p class="text-lg font-medium text-gray-600">Clique ou arraste XMLs aqui</p>
+                <p class="text-xs text-gray-400 mt-1">Modo Atual: ${state.activeTab.toUpperCase()}</p>
+                <input id="fileInput" type="file" multiple class="hidden" accept=".xml" onchange="handleFiles(this.files)">
+            </div>
+        `;
+
+        const NFeList = () => {
+            if(!state.nfeList.length) return UploadArea();
+            return `
+                <div class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm fade-in">
+                    <div class="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                        <h3 class="font-bold text-gray-700 text-sm uppercase">Lista de NF-e (${state.nfeList.length})</h3>
+                        <div class="flex gap-2">
+                            <button onclick="exportCSV()" class="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded hover:bg-green-700 transition"><i data-lucide="download" class="w-3 h-3"></i> Excel</button>
+                            <button onclick="document.getElementById('fileInput').click()" class="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded hover:bg-blue-700 transition"><i data-lucide="plus" class="w-3 h-3"></i> Add</button>
+                            <button onclick="state.nfeList=[]; render()" class="px-3 py-1.5 bg-gray-200 text-gray-600 text-xs font-bold rounded hover:bg-gray-300 transition">Limpar</button>
                         </div>
                     </div>
-                `;
-
-                // Retenções
-                const retencoesHtml = `
-                    <div class="border-l-4 rounded-r-xl shadow-sm p-6 ${hasRetidos ? 'bg-amber-50 border-amber-500' : 'bg-green-50 border-green-500'}">
-                        <div class="flex items-start gap-4">
-                            <div class="p-2 rounded-full ${hasRetidos ? 'bg-amber-100 text-amber-600' : 'bg-green-100 text-green-600'}">
-                                <i data-lucide="${hasRetidos ? 'alert-triangle' : 'check-circle'}" class="w-6 h-6"></i>
-                            </div>
-                            <div class="flex-1">
-                                <h3 class="text-lg font-bold ${hasRetidos ? 'text-amber-800' : 'text-green-800'}">
-                                    ${hasRetidos ? 'Existem Impostos Retidos' : 'Não constam Impostos Retidos'}
-                                </h3>
-                                ${hasRetidos ? `
-                                    <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                                        ${nfeData.impostosRetidos.map(imp => `
-                                            <div class="bg-white/60 p-3 rounded border border-amber-200">
-                                                <span class="block text-xs font-bold text-amber-800 uppercase">${imp.label}</span>
-                                                <span class="block text-lg font-mono font-medium text-amber-900">${formatCurrency(imp.value)}</span>
-                                            </div>
-                                        `).join('')}
-                                        <div class="bg-amber-200/50 p-3 rounded border border-amber-300">
-                                            <span class="block text-xs font-bold text-amber-900 uppercase">Total Retido</span>
-                                            <span class="block text-lg font-mono font-bold text-amber-950">${formatCurrency(nfeData.totais.totalRetido)}</span>
-                                        </div>
-                                    </div>
-                                ` : '<p class="text-green-700 mt-1 text-sm">Nenhum valor de ST, FCP ou retenção foi identificado nos totais desta nota.</p>'}
-                            </div>
-                        </div>
-                    </div>
-                `;
-
-                // Tabela Detalhe
-                const produtosHtml = `
-                    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                        <div class="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                            <h3 class="font-bold text-slate-700 flex items-center gap-2">
-                                <i data-lucide="package" class="text-slate-400 w-5 h-5"></i>
-                                Produtos e Serviços
-                            </h3>
-                            <span class="bg-slate-200 text-slate-600 text-xs px-2 py-1 rounded-full font-bold">
-                                ${nfeData.produtos.length} Itens
-                            </span>
-                        </div>
-                        <div class="overflow-x-auto">
-                            <table class="w-full text-left text-sm">
-                                <thead class="bg-slate-50 text-slate-500 border-b border-slate-200">
-                                    <tr>
-                                        <th class="px-6 py-3 font-semibold">#</th>
-                                        <th class="px-6 py-3 font-semibold">Descrição / Código</th>
-                                        <th class="px-6 py-3 font-semibold text-center">Quant.</th>
-                                        <th class="px-6 py-3 font-semibold text-right">Valor Un.</th>
-                                        <th class="px-6 py-3 font-semibold text-right">Total</th>
-                                        <th class="px-6 py-3 font-semibold">Tributos (Aprox.)</th>
+                    <div class="overflow-x-auto">
+                        <table class="fiscal-table">
+                            <thead>
+                                <tr>
+                                    <th>Número</th><th>Emissão</th><th>Emitente</th><th>CFOP</th><th class="text-right">Valor Total</th><th class="text-center">Retenção</th><th class="text-center">Ação</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${state.nfeList.map((nf, idx) => `
+                                    <tr class="cursor-pointer" onclick="state.selectedIndex=${idx}; render()">
+                                        <td class="font-mono font-bold text-blue-600">${nf.header.numero}</td>
+                                        <td>${nf.header.emissao}</td>
+                                        <td>${nf.emitente.nome}</td>
+                                        <td><span class="badge badge-cfop" title="${nf.header.natOp}">${nf.cfops}</span></td>
+                                        <td class="text-right font-bold">${formatBRL(nf.impostos.vNF)}</td>
+                                        <td class="text-center">
+                                            <span class="badge ${nf.temRetencao ? 'badge-yes' : 'badge-no'}">${nf.temRetencao ? 'SIM' : 'NÃO'}</span>
+                                        </td>
+                                        <td class="text-center text-gray-400 hover:text-blue-600"><i data-lucide="eye" class="w-4 h-4 mx-auto"></i></td>
                                     </tr>
-                                </thead>
-                                <tbody class="divide-y divide-slate-100">
-                                    ${nfeData.produtos.map(prod => `
-                                        <tr class="hover:bg-slate-50 transition-colors">
-                                            <td class="px-6 py-4 text-slate-400 font-mono text-xs">${prod.id}</td>
-                                            <td class="px-6 py-4">
-                                                <p class="font-medium text-slate-800">${prod.nome}</p>
-                                                <div class="flex gap-2 mt-1">
-                                                    <span class="text-xs bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">NCM: ${prod.ncm}</span>
-                                                    <span class="text-xs bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">CFOP: ${prod.cfop}</span>
-                                                </div>
-                                            </td>
-                                            <td class="px-6 py-4 text-center">
-                                                <span class="font-medium text-slate-700">${prod.quantidade}</span>
-                                                <span class="text-xs text-slate-400 ml-1">${prod.unidade}</span>
-                                            </td>
-                                            <td class="px-6 py-4 text-right text-slate-600">${formatCurrency(prod.valorUnitario)}</td>
-                                            <td class="px-6 py-4 text-right font-medium text-slate-800">${formatCurrency(prod.valorTotal)}</td>
-                                            <td class="px-6 py-4">
-                                                <div class="flex flex-col gap-1 text-xs text-slate-500">
-                                                    ${prod.impostosItem.vICMS > 0 ? `<span class="flex justify-between w-28"><span>ICMS:</span> ${formatCurrency(prod.impostosItem.vICMS)}</span>` : ''}
-                                                    ${prod.impostosItem.vIPI > 0 ? `<span class="flex justify-between w-28"><span>IPI:</span> ${formatCurrency(prod.impostosItem.vIPI)}</span>` : ''}
-                                                    ${(prod.impostosItem.vPIS + prod.impostosItem.vCOFINS) > 0 ? `<span class="flex justify-between w-28"><span>PIS/COF:</span> ${formatCurrency(prod.impostosItem.vPIS + prod.impostosItem.vCOFINS)}</span>` : ''}
-                                                    ${prod.impostosItem.vICMS === 0 && prod.impostosItem.vIPI === 0 ? '<span class="text-slate-300">-</span>' : ''}
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    `).join('')}
-                                </tbody>
-                            </table>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        };
+
+        const NFSeList = () => {
+            if(!state.nfseList.length) return UploadArea();
+            return `
+                <div class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm fade-in">
+                    <div class="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                        <h3 class="font-bold text-gray-700 text-sm uppercase">Lista de NFS-e (${state.nfseList.length})</h3>
+                        <div class="flex gap-2">
+                            <button onclick="exportCSV()" class="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white text-xs font-bold rounded hover:bg-green-700 transition"><i data-lucide="download" class="w-3 h-3"></i> Excel</button>
+                            <button onclick="document.getElementById('fileInput').click()" class="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-xs font-bold rounded hover:bg-blue-700 transition"><i data-lucide="plus" class="w-3 h-3"></i> Add</button>
+                            <button onclick="state.nfseList=[]; render()" class="px-3 py-1.5 bg-gray-200 text-gray-600 text-xs font-bold rounded hover:bg-gray-300 transition">Limpar</button>
                         </div>
                     </div>
-                `;
-
-                content = `
-                    ${headerHtml}
-                    <div class="animate-fade-in space-y-6">
-                        ${cardsHtml}
-                        ${retencoesHtml}
-                        ${produtosHtml}
+                    <div class="overflow-x-auto">
+                        <table class="fiscal-table">
+                            <thead>
+                                <tr>
+                                    <th>Número</th><th>Emissão</th><th>Prestador</th><th class="text-right">Valor Nota</th><th class="text-center">Retenção</th><th class="text-center">Ação</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${state.nfseList.map((nf, idx) => `
+                                    <tr class="cursor-pointer" onclick="state.selectedIndex=${idx}; render()">
+                                        <td class="font-mono font-bold text-blue-600">${nf.header.numero}</td>
+                                        <td>${nf.header.emissao}</td>
+                                        <td>${nf.prestador.nome}</td>
+                                        <td class="text-right font-bold">${formatBRL(nf.valores.vNota)}</td>
+                                        <td class="text-center">
+                                            <span class="badge ${nf.temRetencao ? 'badge-yes' : 'badge-no'}">${nf.temRetencao ? 'SIM' : 'NÃO'}</span>
+                                        </td>
+                                        <td class="text-center text-gray-400 hover:text-blue-600"><i data-lucide="eye" class="w-4 h-4 mx-auto"></i></td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
                     </div>
-                `;
+                </div>
+            `;
+        };
+
+        const DetailBox = (title, items) => `
+            <div class="detail-box shadow-sm">
+                <div class="detail-header">${title}</div>
+                <div class="detail-content">
+                    ${items.map(i => `
+                        <div class="val-row">
+                            <span class="val-label">${i.label}</span>
+                            <span class="val-data ${i.isRed ? 'val-red' : ''}">${formatBRL(i.val)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+
+        const NFeDetail = () => {
+            const nf = state.nfeList[state.selectedIndex];
+            return `
+                <div class="fade-in">
+                    <button onclick="state.selectedIndex=null; render()" class="mb-4 text-sm text-blue-600 hover:underline flex items-center gap-1 font-bold"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button>
+                    
+                    <div class="bg-blue-700 text-white p-4 rounded-lg shadow mb-6">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <h2 class="text-2xl font-bold">NF-e ${nf.header.numero}</h2>
+                                <p class="text-blue-200 text-sm font-mono">Chave: ${nf.header.chave}</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-xs uppercase text-blue-200">Data Emissão</p>
+                                <p class="font-bold text-lg">${nf.header.emissao}</p>
+                            </div>
+                        </div>
+                        <div class="mt-2 pt-2 border-t border-blue-600 text-blue-100 text-xs flex gap-4">
+                            <span>Natureza: <strong>${nf.header.natOp}</strong></span>
+                            <span>CFOPs: <strong>${nf.cfops}</strong></span>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                         <div class="bg-white p-4 rounded shadow-sm border border-gray-200">
+                            <p class="text-xs uppercase text-gray-400 font-bold mb-1">Emitente</p>
+                            <p class="font-bold text-gray-800">${nf.emitente.nome}</p>
+                            <p class="text-sm text-gray-500">CNPJ: ${nf.emitente.cnpj}</p>
+                         </div>
+                         <div class="bg-white p-4 rounded shadow-sm border border-gray-200">
+                            <p class="text-xs uppercase text-gray-400 font-bold mb-1">Destinatário</p>
+                            <p class="font-bold text-gray-800">${nf.destinatario.nome}</p>
+                            <p class="text-sm text-gray-500">CNPJ: ${nf.destinatario.cnpj}</p>
+                         </div>
+                    </div>
+
+                    <h3 class="font-bold text-gray-700 uppercase text-sm mb-3 border-b-2 border-gray-300 pb-1">Quadro de Impostos</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                        ${DetailBox('Totais Gerais', [
+                            {label: 'Total Produtos', val: nf.impostos.vProd},
+                            {label: 'Base Cálculo ICMS', val: nf.impostos.vBC},
+                            {label: 'TOTAL NOTA', val: nf.impostos.vNF, isRed: false}
+                        ])}
+                        
+                        ${DetailBox('Tributos Destacados', [
+                            {label: 'ICMS Próprio', val: nf.impostos.vICMS},
+                            {label: 'IPI', val: nf.impostos.vIPI},
+                            {label: 'PIS', val: nf.impostos.vPIS},
+                            {label: 'COFINS', val: nf.impostos.vCOFINS}
+                        ])}
+
+                        ${DetailBox('Retenções (Recolher)', [
+                            {label: 'ICMS ST', val: nf.ret.vST, isRed: nf.ret.vST > 0},
+                            {label: 'FCP ST', val: nf.ret.vFCPST, isRed: nf.ret.vFCPST > 0},
+                            {label: 'PIS Retido', val: nf.ret.vPISRet, isRed: nf.ret.vPISRet > 0},
+                            {label: 'COFINS Retido', val: nf.ret.vCOFINSRet, isRed: nf.ret.vCOFINSRet > 0},
+                            {label: 'CSLL Retido', val: nf.ret.vCSLLRet, isRed: nf.ret.vCSLLRet > 0},
+                            {label: 'IRRF Retido', val: nf.ret.vIRRFRet, isRed: nf.ret.vIRRFRet > 0},
+                            {label: 'INSS Retido', val: nf.ret.vINSSRet, isRed: nf.ret.vINSSRet > 0}
+                        ])}
+                    </div>
+
+                    <h3 class="font-bold text-gray-700 uppercase text-sm mb-3 border-b-2 border-gray-300 pb-1">Itens</h3>
+                    <div class="bg-white rounded border border-gray-200 overflow-hidden">
+                        <table class="fiscal-table">
+                            <thead><tr><th>#</th><th>Prod</th><th>NCM</th><th>CFOP</th><th>Qtd</th><th class="text-right">V.Unit</th><th class="text-right">Total</th></tr></thead>
+                            <tbody>
+                                ${nf.items.map(i => `
+                                    <tr>
+                                        <td>${i.nItem}</td>
+                                        <td class="text-xs">${i.xProd}</td>
+                                        <td class="text-xs text-center">${i.ncm}</td>
+                                        <td class="text-xs text-center font-bold text-blue-700">${i.cfop}</td>
+                                        <td class="text-center">${i.qCom}</td>
+                                        <td class="text-right">${formatBRL(i.vUnCom)}</td>
+                                        <td class="text-right font-bold">${formatBRL(i.vProd)}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        };
+
+        const NFSeDetail = () => {
+            const nf = state.nfseList[state.selectedIndex];
+            return `
+                <div class="fade-in">
+                    <button onclick="state.selectedIndex=null; render()" class="mb-4 text-sm text-blue-600 hover:underline flex items-center gap-1 font-bold"><i data-lucide="arrow-left" class="w-4 h-4"></i> Voltar</button>
+                    
+                    <div class="bg-purple-700 text-white p-4 rounded-lg shadow mb-6">
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <h2 class="text-2xl font-bold">NFS-e ${nf.header.numero}</h2>
+                                <p class="text-purple-200 text-sm">Prestador: ${nf.prestador.nome}</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-xs uppercase text-purple-200">Emissão</p>
+                                <p class="font-bold text-lg">${nf.header.emissao}</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <h3 class="font-bold text-gray-700 uppercase text-sm mb-3 border-b-2 border-gray-300 pb-1">Valores e Impostos</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                        ${DetailBox('Valores do Serviço', [
+                            {label: 'Valor Serviço', val: nf.valores.vServico},
+                            {label: 'Valor ISS', val: nf.valores.vISS},
+                            {label: 'LÍQUIDO (NOTA)', val: nf.valores.vNota}
+                        ])}
+
+                        ${DetailBox('Retenções Federais', [
+                            {label: 'PIS Retido', val: nf.ret.pis, isRed: nf.ret.pis > 0},
+                            {label: 'COFINS Retido', val: nf.ret.cofins, isRed: nf.ret.cofins > 0},
+                            {label: 'INSS Retido', val: nf.ret.inss, isRed: nf.ret.inss > 0},
+                            {label: 'IR Retido', val: nf.ret.ir, isRed: nf.ret.ir > 0},
+                            {label: 'CSLL Retido', val: nf.ret.csll, isRed: nf.ret.csll > 0},
+                            {label: 'Total Retido', val: nf.totalRetido, isRed: nf.totalRetido > 0}
+                        ])}
+                    </div>
+                </div>
+            `;
+        };
+
+        const render = () => {
+            const isNFe = state.activeTab === 'nfe';
+            const isList = state.selectedIndex === null;
+            
+            let html = Header();
+            
+            if(state.isProcessing) {
+                html += `<div class="text-center py-20"><i data-lucide="loader-2" class="w-10 h-10 animate-spin mx-auto text-blue-600 mb-2"></i><p class="text-gray-500">Processando...</p></div>`;
+            } else {
+                if(isNFe) {
+                    html += isList ? NFeList() : NFeDetail();
+                } else {
+                    html += isList ? NFSeList() : NFSeDetail();
+                }
             }
 
-            appElement.innerHTML = content;
-            lucide.createIcons(); // Recarrega os ícones
-            bindDragEvents();
+            app.innerHTML = html;
+            lucide.createIcons();
         };
 
-        // Eventos de Drag and Drop
-        const bindDragEvents = () => {
-            const dropZone = document.getElementById('dropZone');
-            if (!dropZone) return;
-
-            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-                dropZone.addEventListener(eventName, (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                }, false);
-            });
-
-            ['dragenter', 'dragover'].forEach(eventName => {
-                dropZone.addEventListener(eventName, () => {
-                    dragActive = true;
-                    render(); 
-                }, false);
-            });
-
-            ['dragleave', 'drop'].forEach(eventName => {
-                dropZone.addEventListener(eventName, () => {
-                    dragActive = false;
-                }, false);
-            });
-
-            dropZone.addEventListener('drop', (e) => {
-                const dt = e.dataTransfer;
-                const files = dt.files;
-                if (files && files.length > 0) handleFiles(files);
-            }, false);
-        };
-
-        // Inicializa
+        // Inicia
         render();
 
     </script>
